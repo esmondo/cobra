@@ -53,10 +53,29 @@ PLIST
 # Cobra Dev cert is deliberately untrusted, so look the certificate up directly.
 if security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
     codesign --force --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" "$APP"
-    echo "Signed with '$SIGN_IDENTITY' — permissions persist across rebuilds."
 else
     codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
-    echo "Ad-hoc signed. Run Scripts/make-cert.sh to stop re-granting permissions on every build."
+fi
+
+# An ad-hoc signature ties the designated requirement to the cdhash, which
+# changes on every build. macOS then stops trusting the rebuilt app while its
+# Accessibility toggle still reads as enabled — a stale row that toggling does
+# not fix. Say so loudly rather than shipping a build that will strand the user.
+if codesign -dv "$APP" 2>&1 | grep -q "Signature=adhoc"; then
+    cat >&2 <<'WARN'
+
+  WARNING: ad-hoc signed.
+
+  Permissions will be dropped on the next rebuild, and the Accessibility
+  toggle will keep showing as enabled while the app is untrusted.
+
+  Fix:  ./Scripts/make-cert.sh
+        tccutil reset Accessibility ai.cobra.mac
+        tccutil reset Microphone ai.cobra.mac
+
+WARN
+else
+    echo "Signed with '$SIGN_IDENTITY' — permissions persist across rebuilds."
 fi
 
 echo "Built $APP"

@@ -41,10 +41,24 @@ public final class HotkeyMonitor {
         return AXIsProcessTrustedWithOptions(options as CFDictionary)
     }
 
+    /// Shows the system Accessibility dialog once. Calling this repeatedly
+    /// reopens the dialog every time, so it belongs at a deliberate moment
+    /// rather than inside a polling loop.
+    public static func promptForAccessibility() {
+        _ = hasAccessibilityPermission(prompt: true)
+    }
+
+    /// Arms the event tap. Returns false when Accessibility has not been
+    /// granted.
+    ///
+    /// Deliberately does not consult `AXIsProcessTrusted` first. That value is
+    /// cached per process and frequently keeps reporting false for the rest of
+    /// the process's lifetime after a grant, which strands the app in a state
+    /// only a relaunch can clear. Whether the tap can be created is the ground
+    /// truth for what this type actually needs, so ask that instead.
     @discardableResult
     public func start() -> Bool {
         guard tap == nil else { return true }
-        guard Self.hasAccessibilityPermission(prompt: true) else { return false }
 
         let callback: CGEventTapCallBack = { _, type, event, refcon in
             guard let refcon else { return Unmanaged.passUnretained(event) }

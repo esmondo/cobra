@@ -83,23 +83,17 @@ public final class DictationEngine: ObservableObject {
             return
         }
 
-        if !HotkeyMonitor.hasAccessibilityPermission(prompt: true) {
-            missing = .accessibility
-            state = .needsPermission("Cobra needs Accessibility to see the fn key and type into other apps.")
-            await waitForAccessibility()
-        }
-        missing = nil
-
         let monitor = HotkeyMonitor { [weak self] event in
             Task { @MainActor in self?.handle(event) }
         }
-        guard monitor.start() else {
-            // Trusted but the tap still would not arm — some macOS builds only
-            // hand out an event tap to a process that started already trusted.
+
+        if !monitor.start() {
             missing = .accessibility
-            state = .needsPermission("Accessibility is granted but the key listener could not start. Quit and reopen Cobra.")
-            return
+            state = .needsPermission("Cobra needs Accessibility to see the fn key and type into other apps.")
+            HotkeyMonitor.promptForAccessibility()
+            await waitForAccessibility(arming: monitor)
         }
+        missing = nil
         hotkeys = monitor
 
         do {
@@ -273,11 +267,14 @@ public final class DictationEngine: ObservableObject {
         levels = Array(repeating: 0, count: Self.meterResolution)
     }
 
-    /// Polls until the user grants Accessibility. There is no notification for
-    /// this, so polling is the only option; one second is imperceptible next to
-    /// the time it takes to click through System Settings.
-    private func waitForAccessibility() async {
-        while !HotkeyMonitor.hasAccessibilityPermission() {
+    /// Retries arming the tap until it succeeds.
+    ///
+    /// There is no notification when Accessibility is granted, so this polls.
+    /// It retries `start()` rather than re-reading `AXIsProcessTrusted`, whose
+    /// cached value can stay false for the life of the process and would leave
+    /// the app asking for a permission the user has already given.
+    private func waitForAccessibility(arming monitor: HotkeyMonitor) async {
+        while !monitor.start() {
             try? await Task.sleep(for: .seconds(1))
             if Task.isCancelled { return }
         }
