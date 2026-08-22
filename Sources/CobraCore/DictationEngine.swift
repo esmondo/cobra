@@ -7,36 +7,46 @@ import SwiftUI
 @MainActor
 public final class DictationEngine: ObservableObject {
     public enum State: Equatable {
-        case starting
+        case preparing(TranscriberPreparation)
         case idle
         case recording
         case transcribing
         case needsPermission(String)
         case failed(String)
 
-        public var isBusy: Bool {
+        public var isActive: Bool {
             self == .recording || self == .transcribing
         }
     }
 
-    @Published public private(set) var state: State = .starting
+    /// Number of level samples the HUD's meter draws.
+    public static let meterResolution = 24
+
+    /// Roughly 30 fps, which is enough for the meter to feel live without
+    /// waking the main actor more often than the display refreshes.
+    private static let meterInterval = Duration.milliseconds(33)
+
+    @Published public private(set) var state: State = .preparing(.loading)
     @Published public private(set) var lastTranscript: String = ""
     @Published public private(set) var isHandsFree = false
+    /// Recent input levels, oldest first. Drives the HUD meter.
+    @Published public private(set) var levels: [Float] = Array(repeating: 0, count: DictationEngine.meterResolution)
 
     private let recorder = AudioRecorder()
-    private let transcriber: WhisperServerTranscriber
+    private let transcriber: any Transcriber
     private let formatter: TextFormatter
     private var hotkeys: HotkeyMonitor?
+    private var meterTask: Task<Void, Never>?
 
     public init(
-        transcriber: WhisperServerTranscriber = WhisperServerTranscriber(),
+        transcriber: any Transcriber = ParakeetTranscriber(),
         formatter: TextFormatter = RuleFormatter()
     ) {
         self.transcriber = transcriber
         self.formatter = formatter
     }
 
-    /// Requests permissions, boots the speech server, and arms the hotkeys.
+    /// Requests permissions, loads the speech model, and arms the hotkeys.
     public func start() async {
         guard await requestMicrophoneAccess() else {
             state = .needsPermission("Microphone access is required. Grant it in System Settings › Privacy & Security › Microphone.")
@@ -53,7 +63,12 @@ public final class DictationEngine: ObservableObject {
         hotkeys = monitor
 
         do {
-            try await transcriber.start()
+            try await transcriber.prepare { [weak self] progress in
+                Task { @MainActor in
+                    guard let self, case .preparing = self.state else { return }
+                    self.state = .preparing(progress)
+                }
+            }
         } catch {
             state = .failed(error.localizedDescription)
             return
@@ -63,9 +78,9 @@ public final class DictationEngine: ObservableObject {
     }
 
     public func shutdown() {
+        meterTask?.cancel()
         hotkeys?.stop()
         recorder.cancel()
-        transcriber.stop()
     }
 
     private func handle(_ event: HotkeyEvent) {
@@ -94,19 +109,22 @@ public final class DictationEngine: ObservableObject {
         do {
             try recorder.start()
             state = .recording
+            startMetering()
         } catch {
             state = .failed(error.localizedDescription)
         }
     }
 
     private func finishRecording() {
+        stopMetering()
+
         // Capture the frontmost app before transcription, because the user may
-        // click elsewhere while Whisper is still working.
+        // click elsewhere while the model is still working.
         let context = AppContext.current()
 
-        let wavURL: URL
+        let samples: [Float]
         do {
-            wavURL = try recorder.stop()
+            samples = try recorder.stop()
         } catch {
             state = .idle  // A too-short tap is not worth surfacing as an error.
             return
@@ -114,9 +132,8 @@ public final class DictationEngine: ObservableObject {
 
         state = .transcribing
         Task {
-            defer { try? FileManager.default.removeItem(at: wavURL) }
             do {
-                let raw = try await transcriber.transcribe(wavURL: wavURL)
+                let raw = try await transcriber.transcribe(samples: samples)
                 let cleaned = await formatter.format(raw, context: context)
                 guard !cleaned.isEmpty else {
                     state = .idle
@@ -129,6 +146,26 @@ public final class DictationEngine: ObservableObject {
                 state = .failed(error.localizedDescription)
             }
         }
+    }
+
+    private func startMetering() {
+        meterTask?.cancel()
+        meterTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                var next = self.levels
+                next.removeFirst()
+                next.append(self.recorder.level)
+                self.levels = next
+                try? await Task.sleep(for: Self.meterInterval)
+            }
+        }
+    }
+
+    private func stopMetering() {
+        meterTask?.cancel()
+        meterTask = nil
+        levels = Array(repeating: 0, count: Self.meterResolution)
     }
 
     private func requestMicrophoneAccess() async -> Bool {

@@ -76,9 +76,9 @@ public final class AudioRecorder: @unchecked Sendable {
         isRunning = true
     }
 
-    /// Stops capture and writes the buffered audio to a temporary WAV file.
-    /// The caller owns the returned file and should delete it when finished.
-    public func stop() throws -> URL {
+    /// Stops capture and returns the utterance as 16 kHz mono Float32 samples,
+    /// which is exactly what the transcriber consumes — no file round-trip.
+    public func stop() throws -> [Float] {
         teardown()
 
         lock.lock()
@@ -89,11 +89,7 @@ public final class AudioRecorder: @unchecked Sendable {
         guard Double(captured.count) / Self.targetSampleRate >= Self.minimumDuration else {
             throw RecorderError.tooShort
         }
-
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cobra-\(UUID().uuidString).wav")
-        try WAVWriter.write(samples: captured, sampleRate: Int(Self.targetSampleRate), to: url)
-        return url
+        return captured
     }
 
     /// Stops capture and discards everything recorded.
