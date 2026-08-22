@@ -68,7 +68,15 @@ private struct MenuContent: View {
 
         if !engine.lastTranscript.isEmpty {
             Divider()
-            Text("Last: \(engine.lastTranscript.prefix(60))")
+            Text("Saved transcript available")
+            Button("Copy saved transcript") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(engine.lastTranscript, forType: .string)
+                engine.clearSavedTranscript()
+            }
+            Button("Discard saved transcript") {
+                engine.clearSavedTranscript()
+            }
         }
 
         Divider()
@@ -128,6 +136,7 @@ extension DictationEngine.State {
         case .idle: return "Ready"
         case .recording: return "Listening…"
         case .transcribing: return "Transcribing…"
+        case .notice(let message): return message
         case .needsPermission(let message): return message
         case .failed(let message): return "Error: \(message)"
         }

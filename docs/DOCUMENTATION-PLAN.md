@@ -73,8 +73,8 @@ buffer and the clipped-syllable bug it fixes, and how the level meter is fed.
 
 ### `injection.md`
 The two strategies, why Accessibility is preferred, which apps fall through to
-the pasteboard, and the wrong-window race. Should be honest that this is the
-least reliable stage.
+the pasteboard, exact target binding, and the remaining pasteboard trade-offs.
+Should be honest that this is the least reliable stage.
 
 *Answers:* my text went somewhere unexpected — is that known?
 

@@ -8,22 +8,38 @@ public struct AppContext: Sendable, Equatable {
     public let bundleID: String
     public let appName: String
     public let windowTitle: String?
+    public let processIdentifier: pid_t
 
-    public init(bundleID: String, appName: String, windowTitle: String?) {
+    public init(bundleID: String, appName: String, windowTitle: String?, processIdentifier: pid_t = 0) {
         self.bundleID = bundleID
         self.appName = appName
         self.windowTitle = windowTitle
+        self.processIdentifier = processIdentifier
     }
 
-    public static let unknown = AppContext(bundleID: "", appName: "Unknown", windowTitle: nil)
+    public static let unknown = AppContext(bundleID: "", appName: "Unknown", windowTitle: nil, processIdentifier: 0)
 
     public static func current() -> AppContext {
         guard let app = NSWorkspace.shared.frontmostApplication else { return .unknown }
         return AppContext(
             bundleID: app.bundleIdentifier ?? "",
             appName: app.localizedName ?? "Unknown",
-            windowTitle: focusedWindowTitle(pid: app.processIdentifier)
+            windowTitle: focusedWindowTitle(pid: app.processIdentifier),
+            processIdentifier: app.processIdentifier
         )
+    }
+
+    /// Injection is safe only while the application and focused window that
+    /// received the dictation are still in front. The PID distinguishes two
+    /// running copies of one app; the title distinguishes its windows.
+    public func matchesInjectionTarget(_ other: AppContext) -> Bool {
+        guard processIdentifier > 0,
+              !bundleID.isEmpty,
+              processIdentifier == other.processIdentifier,
+              bundleID == other.bundleID
+        else { return false }
+
+        return windowTitle == other.windowTitle
     }
 
     private static func focusedWindowTitle(pid: pid_t) -> String? {

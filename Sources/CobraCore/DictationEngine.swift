@@ -12,6 +12,7 @@ public final class DictationEngine: ObservableObject {
         case idle
         case recording
         case transcribing
+        case notice(String)
         case needsPermission(String)
         case failed(String)
 
@@ -61,6 +62,7 @@ public final class DictationEngine: ObservableObject {
     private let formatter: TextFormatter
     private var hotkeys: HotkeyMonitor?
     private var meterTask: Task<Void, Never>?
+    private var injectionTarget: TextInjector.Target?
 
     public init(
         streaming: StreamingTranscriber = StreamingTranscriber(),
@@ -159,6 +161,8 @@ public final class DictationEngine: ObservableObject {
         guard state == .idle else { return }
 
         partialText = ""
+        lastTranscript = ""
+        injectionTarget = TextInjector.captureTarget()
         state = .recording
         startMetering()
 
@@ -181,9 +185,9 @@ public final class DictationEngine: ObservableObject {
     private func finishRecording() {
         stopMetering()
 
-        // Capture the frontmost app before transcription finishes, because the
-        // user may click elsewhere while the model is still working.
-        let context = AppContext.current()
+        let target = injectionTarget
+        injectionTarget = nil
+        let context = target?.context ?? .unknown
 
         do {
             _ = try recorder.endCapture()
@@ -206,13 +210,46 @@ public final class DictationEngine: ObservableObject {
                     state = .idle
                     return
                 }
-                lastTranscript = cleaned
-                TextInjector.inject(cleaned)
-                state = .idle
+                guard let target else {
+                    lastTranscript = cleaned
+                    showNotice("Focus changed · transcript saved", for: .seconds(5))
+                    return
+                }
+
+                switch TextInjector.inject(cleaned, into: target) {
+                case .accessibility:
+                    lastTranscript = ""
+                    state = .idle
+                case .pasteboard:
+                    lastTranscript = ""
+                    showNotice("Pasted through clipboard", for: .seconds(2))
+                case .focusChanged:
+                    lastTranscript = cleaned
+                    showNotice("Focus changed · transcript saved", for: .seconds(5))
+                case .pasteboardUnavailable:
+                    lastTranscript = cleaned
+                    showNotice("Clipboard too complex · transcript saved", for: .seconds(5))
+                case .secureField:
+                    lastTranscript = cleaned
+                    showNotice("Secure field · transcript saved", for: .seconds(5))
+                }
             } catch {
                 partialText = ""
                 state = .failed(error.localizedDescription)
             }
+        }
+    }
+
+    public func clearSavedTranscript() {
+        lastTranscript = ""
+    }
+
+    private func showNotice(_ message: String, for duration: Duration) {
+        state = .notice(message)
+        Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard let self, self.state == .notice(message) else { return }
+            self.state = .idle
         }
     }
 

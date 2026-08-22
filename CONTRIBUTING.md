@@ -10,7 +10,7 @@
 
 ```sh
 ./Scripts/make-cert.sh    # once — creates a stable signing identity
-./Scripts/bundle.sh       # builds, generates the icon, signs, packages
+./Scripts/bundle.sh       # builds, generates the icon, signs, packages; signing prompts
 open build/Cobra.app
 ```
 

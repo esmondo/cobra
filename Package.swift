@@ -28,5 +28,10 @@ let package = Package(
             dependencies: ["CobraCore"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .testTarget(
+            name: "CobraCoreTests",
+            dependencies: ["CobraCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )

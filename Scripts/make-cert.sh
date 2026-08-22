@@ -20,6 +20,7 @@ KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
 if security find-certificate -c "$NAME" >/dev/null 2>&1; then
     echo "'$NAME' already exists — nothing to do."
+    echo "If it was created by Cobra before August 2026, remove that identity in Keychain Access and rerun this script to replace its permissive ACL."
     exit 0
 fi
 
@@ -49,6 +50,8 @@ openssl pkcs12 -export -out "$WORK/cobra.p12" \
     -passout pass:cobra -name "$NAME" \
     -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1 2>/dev/null
 
-security import "$WORK/cobra.p12" -k "$KEYCHAIN" -P cobra -T /usr/bin/codesign -A
+# Keep the key non-extractable and do not trust a generally invocable signing
+# tool. macOS will ask for confirmation when a build uses this identity.
+security import "$WORK/cobra.p12" -k "$KEYCHAIN" -P cobra -x -T ""
 
 echo "Created '$NAME'. Run Scripts/bundle.sh, then grant permissions once."

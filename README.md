@@ -17,6 +17,14 @@ Speech never leaves the machine. Transcription runs on the Neural Engine.
 
 ## Install
 
+From the directory where you want to keep Cobra, run:
+
+```sh
+git clone https://github.com/esmondo/cobra.git && cd cobra && ./Scripts/make-cert.sh && ./Scripts/bundle.sh && open build/Cobra.app
+```
+
+Or, from an existing checkout:
+
 ```sh
 ./Scripts/make-cert.sh    # once — stable signing identity
 ./Scripts/bundle.sh
@@ -25,7 +33,8 @@ open build/Cobra.app
 
 Run `make-cert.sh` first. It takes a second and saves a lot of irritation: an
 ad-hoc signature changes on every build, macOS then treats each rebuild as a
-different program, and your permissions are silently dropped.
+different program, and your permissions are silently dropped. macOS asks for
+confirmation when a build uses the signing key.
 
 ## Permissions
 
@@ -149,18 +158,20 @@ icon and the menu bar glyph, so the two cannot drift apart.
    dictation apps.
 5. **`SpeechAnalyzer` backend** — macOS 26; zero app memory. `CobraProbe` exists
    to A/B it against Parakeet.
-6. **Tests** — there are none. This is a gap, not a decision.
+6. **Tests** — target-identity checks are covered; audio, streaming and UI
+   integration coverage are still needed.
 7. **Settings window**, launch at login, notarised distribution.
 
 ## Known limitations
 
-- No tests.
+- Automated coverage is currently limited to target-identity checks.
 - Hotkeys are not configurable.
-- Text can land in the wrong window if you switch apps mid-transcription.
-- The pasteboard fallback restores only the plain-text flavour.
+- Apps with custom controls may not identify secure text fields to Accessibility.
+- The pasteboard fallback briefly exposes dictated text to local clipboard readers.
 - Hands-free mode records until toggled off; there is no silence detection.
 - English and European languages only.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Third-party software and model attributions are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

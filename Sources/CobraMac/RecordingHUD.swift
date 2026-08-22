@@ -45,6 +45,8 @@ struct RecordingHUD: View {
             return engine.isHandsFree ? "Hands-free" : "Listening"
         case .transcribing:
             return "Thinking"
+        case .notice(let message):
+            return message
         case .needsPermission:
             return "Click to grant permission"
         case .failed:
@@ -72,7 +74,7 @@ private struct StatusIndicator: View {
                     .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: animating)
                     .onAppear { animating = true }
 
-            case .failed, .needsPermission:
+            case .failed, .needsPermission, .notice:
                 Circle().fill(Theme.Palette.danger).frame(width: 8, height: 8)
 
             default:
