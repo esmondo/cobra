@@ -53,6 +53,8 @@ struct RecordingHUD: View {
             return "Something broke"
         case .idle:
             return "Ready"
+        case .microphoneOff:
+            return "Microphone off"
         }
     }
 }

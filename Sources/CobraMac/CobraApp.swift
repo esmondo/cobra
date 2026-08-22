@@ -80,6 +80,12 @@ private struct MenuContent: View {
         }
 
         Divider()
+        Toggle("Microphone", isOn: Binding(
+            get: { engine.isMicrophoneEnabled },
+            set: { engine.setMicrophoneEnabled($0) }
+        ))
+
+        Divider()
         Text("Hold fn to dictate")
         Text(engine.isHandsFree ? "Hands-free: on" : "Double-tap right Shift for hands-free")
 
@@ -99,6 +105,9 @@ extension DictationEngine.State {
         switch self {
         case .idle: return false
         case .preparing(.ready): return false
+        // A deliberate off switch is not a problem to report; the menu bar
+        // already shows it, and a permanent pill on screen would be nagging.
+        case .microphoneOff: return false
         default: return true
         }
     }
@@ -113,6 +122,7 @@ extension DictationEngine.State {
     /// symbol communicates faster than a brand mark.
     var alertSymbol: String? {
         switch self {
+        case .microphoneOff: return "mic.slash"
         case .needsPermission: return "lock.trianglebadge.exclamationmark"
         case .failed: return "exclamationmark.triangle"
         case .preparing(.downloading): return "arrow.down.circle"
@@ -134,6 +144,7 @@ extension DictationEngine.State {
         case .preparing(.downloading(let fraction)): return "Downloading speech model… \(Int(fraction * 100))%"
         case .preparing: return "Loading speech model…"
         case .idle: return "Ready"
+        case .microphoneOff: return "Microphone off"
         case .recording: return "Listening…"
         case .transcribing: return "Transcribing…"
         case .notice(let message): return message

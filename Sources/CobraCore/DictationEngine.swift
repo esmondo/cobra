@@ -10,6 +10,9 @@ public final class DictationEngine: ObservableObject {
     public enum State: Equatable {
         case preparing(TranscriberPreparation)
         case idle
+        /// The user switched the microphone off. Distinct from a missing
+        /// permission: nothing is wrong, Cobra is simply not listening.
+        case microphoneOff
         case recording
         case transcribing
         case notice(String)
@@ -56,6 +59,17 @@ public final class DictationEngine: ObservableObject {
     @Published public private(set) var levels: [Float] = Array(repeating: 0, count: DictationEngine.meterResolution)
     /// Which permission is blocking startup, if any. Drives the settings link.
     @Published public private(set) var missing: Permission?
+    /// Whether Cobra holds the microphone open. Off means the audio engine is
+    /// stopped outright, so macOS drops its recording indicator and dictation
+    /// is unavailable until it is switched back on.
+    @Published public private(set) var isMicrophoneEnabled: Bool = DictationEngine.storedMicrophonePreference
+
+    private static let microphoneDefaultsKey = "cobra.microphoneEnabled"
+
+    /// Defaults to on for a first run, where the key is absent.
+    private static var storedMicrophonePreference: Bool {
+        UserDefaults.standard.object(forKey: microphoneDefaultsKey) as? Bool ?? true
+    }
 
     private let recorder = AudioRecorder()
     private let streaming: StreamingTranscriber
@@ -109,13 +123,54 @@ public final class DictationEngine: ObservableObject {
             recorder.onCapturedChunk = { [streaming] chunk in
                 streaming.feed(chunk)
             }
-            try recorder.prepare()
+            if isMicrophoneEnabled {
+                try recorder.prepare()
+            }
         } catch {
             state = .failed(error.localizedDescription)
             return
         }
 
-        state = .idle
+        state = isMicrophoneEnabled ? .idle : .microphoneOff
+    }
+
+    /// Turns the microphone on or off.
+    ///
+    /// Off genuinely stops the audio engine rather than muting downstream, so
+    /// the macOS recording indicator goes out and the claim that Cobra is not
+    /// listening is one the system corroborates.
+    public func setMicrophoneEnabled(_ enabled: Bool) {
+        guard enabled != isMicrophoneEnabled else { return }
+        isMicrophoneEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.microphoneDefaultsKey)
+
+        // Only touch the engine once startup has got far enough to own it;
+        // otherwise start() will honour the new preference when it gets there.
+        switch state {
+        case .preparing, .needsPermission, .failed:
+            return
+        default:
+            break
+        }
+
+        if enabled {
+            do {
+                try recorder.prepare()
+                state = .idle
+            } catch {
+                state = .failed(error.localizedDescription)
+            }
+        } else {
+            if state == .recording || isHandsFree {
+                isHandsFree = false
+                stopMetering()
+                recorder.cancelCapture()
+                partialText = ""
+                Task { await streaming.cancel() }
+            }
+            recorder.teardown()
+            state = .microphoneOff
+        }
     }
 
     public func shutdown() {
@@ -152,7 +207,7 @@ public final class DictationEngine: ObservableObject {
     }
 
     private func beginRecording() {
-        guard state == .idle else { return }
+        guard isMicrophoneEnabled, state == .idle else { return }
 
         partialText = ""
         lastTranscript = ""
