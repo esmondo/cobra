@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 private struct MenuContent: View {
     @ObservedObject var engine: DictationEngine
+    @ObservedObject private var hud = HUDPreferences.shared
 
     var body: some View {
         Text(engine.state.summary)
@@ -80,6 +81,7 @@ private struct MenuContent: View {
         }
 
         Divider()
+        Toggle("Pill follows pointer", isOn: $hud.followsPointer)
         Toggle("Microphone", isOn: Binding(
             get: { engine.isMicrophoneEnabled },
             set: { engine.setMicrophoneEnabled($0) }

@@ -61,10 +61,7 @@ public enum TextInjector {
     public static func inject(_ text: String, into target: Target) -> Method {
         guard !text.isEmpty else { return .accessibility }
         guard isCurrent(target) else { return .focusChanged }
-        guard let isSecure = secureTextFieldStatus(target.element) else {
-            return .secureField
-        }
-        guard !isSecure else { return .secureField }
+        guard !isSecureTextField(target.element) else { return .secureField }
 
         if injectViaAccessibility(text, into: target.element) {
             return .accessibility
@@ -92,12 +89,19 @@ public enum TextInjector {
         return (focused as! AXUIElement)
     }
 
-    /// Nil means the app did not expose enough metadata to establish safety.
-    private static func secureTextFieldStatus(_ element: AXUIElement) -> Bool? {
+    /// Whether the focused element is a password field.
+    ///
+    /// Only an explicit `AXSecureTextField` subrole counts. Treating an
+    /// unreadable subrole as secure sounds like the safe default, but plenty of
+    /// ordinary fields — Electron editors, custom text views — publish no
+    /// subrole at all, so failing closed suppressed injection nearly
+    /// everywhere. Secure fields do advertise the subrole, which is what makes
+    /// the positive test sufficient.
+    private static func isSecureTextField(_ element: AXUIElement) -> Bool {
         var subrole: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole) == .success
-        else { return nil }
-        guard let subrole = subrole as? String else { return nil }
+        guard AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole) == .success,
+              let subrole = subrole as? String
+        else { return false }
         return subrole == "AXSecureTextField"
     }
 

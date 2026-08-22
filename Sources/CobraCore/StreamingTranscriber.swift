@@ -1,6 +1,7 @@
 import AVFoundation
 import FluidAudio
 import Foundation
+import os
 
 /// Live transcription over a sliding window.
 ///
@@ -19,6 +20,8 @@ public final class StreamingTranscriber: @unchecked Sendable {
         }
     }
 
+    private static let log = Logger(subsystem: "ai.cobra.mac", category: "streaming")
+
     private let language: Language
     private var models: AsrModels?
 
@@ -29,8 +32,32 @@ public final class StreamingTranscriber: @unchecked Sendable {
     private var continuation: AsyncStream<[Float]>.Continuation?
 
     private var manager: SlidingWindowAsrManager?
+    /// Batch decoder over the same weights, used for the text that is actually
+    /// inserted. Kept alive so the final pass costs no model loading.
+    private var batch: AsrManager?
     private var pump: Task<Void, Never>?
     private var updates: Task<Void, Never>?
+
+    /// Tuned for feedback latency, not for accuracy.
+    ///
+    /// The stock 11 s chunk only produces text once the chunk closes, measured
+    /// at 12.65 s into a 11.77 s utterance — that is, after the user has
+    /// finished speaking, which is no use as live feedback. A 2 s chunk brings
+    /// the first partial to 2.68 s.
+    ///
+    /// Short windows cost real accuracy: the same clip degrades "path" to
+    /// "pack" and "dictation" to "decades" at chunk seams. That is acceptable
+    /// here only because these partials are never inserted — `finish` re-runs
+    /// the complete utterance through the batch decoder, which has the whole
+    /// recording as context.
+    private static let streamingConfig = SlidingWindowAsrConfig(
+        chunkSeconds: 2.0,
+        hypothesisChunkSeconds: 0.5,
+        leftContextSeconds: 2.0,
+        rightContextSeconds: 0.5,
+        minContextForConfirmation: 1.0,
+        confirmationThreshold: 0.85
+    )
 
     public init(language: Language = .english) {
         self.language = language
@@ -43,7 +70,7 @@ public final class StreamingTranscriber: @unchecked Sendable {
             progress(.ready)
             return
         }
-        models = try await AsrModels.downloadAndLoad(version: .v3) { update in
+        let loaded = try await AsrModels.downloadAndLoad(version: .v3) { update in
             switch update.phase {
             case .downloading:
                 progress(.downloading(fraction: update.fractionCompleted))
@@ -51,6 +78,8 @@ public final class StreamingTranscriber: @unchecked Sendable {
                 progress(.loading)
             }
         }
+        models = loaded
+        batch = AsrManager(config: .default, models: loaded)
         progress(.ready)
     }
 
@@ -60,7 +89,7 @@ public final class StreamingTranscriber: @unchecked Sendable {
 
         // A fresh manager per utterance keeps decoder state from leaking across
         // presses; the weights themselves are shared, so this is cheap.
-        let manager = SlidingWindowAsrManager(config: .default.applying(language: language))
+        let manager = SlidingWindowAsrManager(config: Self.streamingConfig.applying(language: language))
         try await manager.loadModels(models)
         try await manager.startStreaming()
         self.manager = manager
@@ -69,23 +98,30 @@ public final class StreamingTranscriber: @unchecked Sendable {
         setContinuation(continuation)
 
         // Confirmed text accumulates; the volatile tail is replaced each update.
+        Self.log.notice("session begun")
         updates = Task {
             var confirmed = ""
             for await update in await manager.transcriptionUpdates {
+                Self.log.notice("update confirmed=\(update.isConfirmed, privacy: .public) len=\(update.text.count, privacy: .public)")
+                // Updates arrive as bare fragments with no separator, so
+                // joining them naively produces run-ons like "packpath".
                 if update.isConfirmed {
-                    confirmed += update.text
+                    confirmed = Self.join(confirmed, update.text)
                     onPartial(confirmed)
                 } else {
-                    onPartial(confirmed + update.text)
+                    onPartial(Self.join(confirmed, update.text))
                 }
             }
         }
 
         pump = Task {
+            var fed = 0
             for await chunk in stream {
                 guard let buffer = Self.makeBuffer(chunk) else { continue }
+                fed += chunk.count
                 await manager.streamAudio(buffer)
             }
+            Self.log.notice("fed \(fed, privacy: .public) samples")
         }
     }
 
@@ -115,16 +151,32 @@ public final class StreamingTranscriber: @unchecked Sendable {
         existing?.finish()
     }
 
-    /// Closes the session and returns the final transcript.
-    public func finish() async throws -> String {
+    /// Closes the session and transcribes the complete utterance.
+    ///
+    /// The streaming transcript is deliberately discarded. Its short windows
+    /// are what make partials fast, and they are also what makes it wrong at
+    /// seams; one batch pass over the whole recording sees full context and
+    /// costs about 0.15 s for 12 s of audio on an M2.
+    public func finish(samples: [Float]) async throws -> String {
         closeContinuation()
 
         await pump?.value          // Drain queued audio before asking to finish.
-        defer { teardown() }
+        if let manager { _ = try? await manager.finish() }
+        teardown()
 
-        guard let manager else { return "" }
-        let text = try await manager.finish()
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let batch else { throw Failure.notPrepared }
+        var state = try TdtDecoderState()
+        let result = try await batch.transcribe(samples, decoderState: &state, language: language)
+        return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Joins transcript fragments, inserting a space only where both sides
+    /// need one.
+    private static func join(_ existing: String, _ addition: String) -> String {
+        guard !existing.isEmpty else { return addition }
+        guard !addition.isEmpty else { return existing }
+        let needsSpace = !existing.hasSuffix(" ") && !addition.hasPrefix(" ")
+        return existing + (needsSpace ? " " : "") + addition
     }
 
     public func cancel() async {

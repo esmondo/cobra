@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import os
 
 public enum HotkeyEvent: Sendable {
     /// The push-to-talk key went down.
@@ -17,6 +18,8 @@ public enum HotkeyEvent: Sendable {
 /// observe — only a CGEventTap on `.flagsChanged` sees them. That tap requires
 /// the Accessibility permission, so `start()` fails until the user grants it.
 public final class HotkeyMonitor {
+    private static let log = Logger(subsystem: "ai.cobra.mac", category: "hotkey")
+
     /// Globe/fn. Held down to dictate.
     private static let fnKeyCode: Int64 = 63
     /// Right Shift. Double-tapped to toggle hands-free mode.
@@ -74,12 +77,14 @@ public final class HotkeyMonitor {
             callback: callback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
+            Self.log.error("tap creation failed — Accessibility not granted")
             return false
         }
 
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        Self.log.notice("event tap armed")
 
         self.tap = tap
         self.runLoopSource = source
@@ -109,6 +114,7 @@ public final class HotkeyMonitor {
 
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags
+        Self.log.debug("flagsChanged keyCode=\(keyCode, privacy: .public) flags=\(flags.rawValue, format: .hex, privacy: .public)")
 
         switch keyCode {
         case Self.fnKeyCode:

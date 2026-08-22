@@ -10,8 +10,15 @@ import SwiftUI
 /// buy, and why the view ignores mouse events entirely.
 @MainActor
 final class HUDController {
+    /// Pointer tracking cadence. Polled rather than driven by a global mouse
+    /// monitor: the panel has to keep up during drags and across spaces, where
+    /// event delivery to a background observer is not guaranteed.
+    private static let followInterval: TimeInterval = 1.0 / 60.0
+
     private let panel: NSPanel
     private let hostingView: NSHostingView<RecordingHUD>
+    private var followTimer: Timer?
+    private var lastPointer: CGPoint?
 
     init(engine: DictationEngine) {
         hostingView = NSHostingView(rootView: RecordingHUD(engine: engine))
@@ -39,6 +46,7 @@ final class HUDController {
 
     func setVisible(_ visible: Bool, interactive: Bool = false) {
         guard visible else {
+            stopFollowing()
             panel.orderOut(nil)
             return
         }
@@ -46,6 +54,38 @@ final class HUDController {
         panel.setContentSize(hostingView.fittingSize)
         position()
         panel.orderFrontRegardless()
+
+        if HUDPreferences.shared.followsPointer {
+            startFollowing()
+        }
+    }
+
+    private func startFollowing() {
+        guard followTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.followInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.followPointer() }
+        }
+        // Common modes, or the pill freezes while a menu is open or a window
+        // is being dragged.
+        RunLoop.main.add(timer, forMode: .common)
+        followTimer = timer
+    }
+
+    private func stopFollowing() {
+        followTimer?.invalidate()
+        followTimer = nil
+        lastPointer = nil
+    }
+
+    private func followPointer() {
+        let pointer = NSEvent.mouseLocation
+        // Repositioning a window 60 times a second regardless of whether the
+        // pointer moved is wasted work; most frames it is stationary.
+        if let last = lastPointer, abs(last.x - pointer.x) < 0.5, abs(last.y - pointer.y) < 0.5 {
+            return
+        }
+        lastPointer = pointer
+        position()
     }
 
     /// Places the pill just under the caret, falling back to the bottom of the
@@ -53,10 +93,21 @@ final class HUDController {
     /// Electron apps and anything drawing its own text view.
     private func position() {
         let size = panel.frame.size
-        let screen = NSScreen.main ?? NSScreen.screens[0]
+        let pointer = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(pointer) }
+            ?? NSScreen.main
+            ?? NSScreen.screens[0]
 
         var origin: CGPoint
-        if let caret = CaretLocator.caretRect() {
+        if HUDPreferences.shared.followsPointer {
+            // Level with the cursor and to its right. The pill is centred
+            // within the panel, so halving the frame height puts the pill's
+            // midline on the pointer rather than its top edge.
+            origin = CGPoint(
+                x: pointer.x + Theme.Metrics.caretGap,
+                y: pointer.y - size.height / 2
+            )
+        } else if let caret = CaretLocator.caretRect() {
             origin = CGPoint(
                 x: caret.midX - size.width / 2,
                 y: caret.minY - size.height - Theme.Metrics.caretGap

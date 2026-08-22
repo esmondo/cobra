@@ -1,6 +1,7 @@
 import AVFoundation
 import AppKit
 import Foundation
+import os
 import SwiftUI
 
 /// Wires capture, live transcription, cleanup and injection into one loop, and
@@ -50,7 +51,14 @@ public final class DictationEngine: ObservableObject {
     /// state, so both need to reach the same instance.
     public static let shared = DictationEngine()
 
-    @Published public private(set) var state: State = .preparing(.loading)
+    private static let log = Logger(subsystem: "ai.cobra.mac", category: "engine")
+
+    @Published public private(set) var state: State = .preparing(.loading) {
+        didSet {
+            guard state != oldValue else { return }
+            Self.log.notice("state \(String(describing: oldValue), privacy: .public) -> \(String(describing: self.state), privacy: .public)")
+        }
+    }
     @Published public private(set) var lastTranscript: String = ""
     @Published public private(set) var isHandsFree = false
     /// Live transcript, updated while the user is still speaking.
@@ -186,6 +194,7 @@ public final class DictationEngine: ObservableObject {
     }
 
     private func handle(_ event: HotkeyEvent) {
+        Self.log.notice("hotkey \(String(describing: event), privacy: .public) state=\(String(describing: self.state), privacy: .public) mic=\(self.isMicrophoneEnabled, privacy: .public)")
         switch event {
         case .pushToTalkBegan:
             guard !isHandsFree else { return }
@@ -238,8 +247,9 @@ public final class DictationEngine: ObservableObject {
         injectionTarget = nil
         let context = target?.context ?? .unknown
 
+        let samples: [Float]
         do {
-            _ = try recorder.endCapture()
+            samples = try recorder.endCapture()
         } catch {
             // A too-short tap is not worth surfacing as an error, but the
             // streaming session still has to be torn down.
@@ -252,7 +262,9 @@ public final class DictationEngine: ObservableObject {
         state = .transcribing
         Task {
             do {
-                let raw = try await streaming.finish()
+                // The streaming transcript drove the HUD; the inserted text
+                // comes from a full-context pass over the same audio.
+                let raw = try await streaming.finish(samples: samples)
                 let cleaned = await formatter.format(raw, context: context)
                 partialText = ""
                 guard !cleaned.isEmpty else {

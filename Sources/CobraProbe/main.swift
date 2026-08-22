@@ -61,6 +61,7 @@ func loadSamples(from url: URL) throws -> [Float] {
     return Array(UnsafeBufferPointer(start: channel, count: Int(output.frameLength)))
 }
 
+let streamMode = arguments.contains("--stream")
 let samples = try loadSamples(from: url)
 let seconds = Double(samples.count) / 16_000
 print("audio: \(String(format: "%.2f", seconds))s, \(samples.count) samples")
@@ -84,4 +85,34 @@ for pass in 1...2 {
     let realtime = seconds / elapsed
     print("pass \(pass): \(String(format: "%.3f", elapsed))s  (\(String(format: "%.0f", realtime))x realtime)")
     if pass == 2 { print("text: \(text)") }
+}
+
+
+// --stream measures how quickly partial text comes back, which is the number
+// that decides whether live transcription feels responsive. Audio is fed in
+// 100 ms slices to imitate a microphone rather than handing over the whole
+// utterance at once, which would collapse the latency being measured.
+if streamMode {
+    let streaming = StreamingTranscriber()
+    try await streaming.prepare { _ in }
+
+    let start = Date()
+    var firstUpdate: TimeInterval?
+    try await streaming.begin { text in
+        let elapsed = -start.timeIntervalSinceNow
+        if firstUpdate == nil { firstUpdate = elapsed }
+        print(String(format: "  %6.2fs  partial(%d): %@", elapsed, text.count, text))
+    }
+
+    let slice = 1_600  // 100 ms at 16 kHz
+    for offset in stride(from: 0, to: samples.count, by: slice) {
+        streaming.feed(Array(samples[offset..<min(offset + slice, samples.count)]))
+        try await Task.sleep(for: .milliseconds(100))
+    }
+
+    let final = try await streaming.finish(samples: samples)
+    print(String(format: "first partial: %@", firstUpdate.map { String(format: "%.2fs", $0) } ?? "NEVER"))
+    print(String(format: "total: %.2fs for %.2fs of audio", -start.timeIntervalSinceNow, seconds))
+    print("final: \(final)")
+    exit(0)
 }
