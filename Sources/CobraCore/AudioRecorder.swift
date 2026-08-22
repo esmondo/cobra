@@ -2,8 +2,17 @@ import AVFoundation
 import Foundation
 
 /// Captures microphone audio and resamples it to the 16 kHz mono Float32 format
-/// Whisper expects. One instance handles one utterance at a time: samples are
-/// buffered in memory while recording, then flushed to a temporary WAV file.
+/// the speech models expect.
+///
+/// The engine runs continuously once `prepare()` is called rather than starting
+/// on each keypress. Two things need that: `AVAudioEngine.start()` is not
+/// instantaneous and people begin speaking as they press the key, so a
+/// start-on-demand recorder loses the first syllable; and live partial
+/// transcription needs audio flowing before the utterance is over.
+///
+/// The cost is that macOS shows the microphone-in-use indicator for as long as
+/// Cobra is running. Nothing is written to disk, and audio outside an utterance
+/// lives only in a 0.4 s rolling buffer that is continuously overwritten.
 public final class AudioRecorder: @unchecked Sendable {
     public enum RecorderError: LocalizedError {
         case converterUnavailable
@@ -19,11 +28,14 @@ public final class AudioRecorder: @unchecked Sendable {
         }
     }
 
-    /// Whisper is trained on 16 kHz mono audio; anything else has to be resampled.
+    /// The speech models are trained on 16 kHz mono audio.
     private static let targetSampleRate = 16_000.0
 
     /// Utterances below this length are almost always an accidental hotkey tap.
     private static let minimumDuration = 0.25
+
+    /// How much audio from before the keypress is prepended to each utterance.
+    private static let preRollDuration = 0.4
 
     private let engine = AVAudioEngine()
     private let targetFormat = AVAudioFormat(
@@ -35,26 +47,31 @@ public final class AudioRecorder: @unchecked Sendable {
 
     private let lock = NSLock()
     private var samples: [Float] = []
+    /// Rolling window of the most recent audio, kept whenever the engine runs.
+    private var preRoll: [Float] = []
+    private var isCapturing = false
     private var isRunning = false
+
+    /// Called with each newly converted block while capturing, for live
+    /// transcription. Invoked on the audio thread — do not block.
+    public var onCapturedChunk: (@Sendable ([Float]) -> Void)?
 
     public init() {}
 
-    /// Seconds of audio captured so far.
+    /// Peak amplitude of the most recent capture window, for level metering.
+    public private(set) var level: Float = 0
+
     public var duration: TimeInterval {
         lock.lock()
         defer { lock.unlock() }
         return Double(samples.count) / Self.targetSampleRate
     }
 
-    /// Peak amplitude of the most recent capture window, for level metering.
-    public private(set) var level: Float = 0
+    private var preRollCapacity: Int { Int(Self.preRollDuration * Self.targetSampleRate) }
 
-    public func start() throws {
+    /// Starts the audio engine. Safe to call more than once.
+    public func prepare() throws {
         guard !isRunning else { return }
-
-        lock.lock()
-        samples.removeAll(keepingCapacity: true)
-        lock.unlock()
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
@@ -76,36 +93,48 @@ public final class AudioRecorder: @unchecked Sendable {
         isRunning = true
     }
 
-    /// Stops capture and returns the utterance as 16 kHz mono Float32 samples,
-    /// which is exactly what the transcriber consumes — no file round-trip.
-    public func stop() throws -> [Float] {
-        teardown()
+    /// Begins an utterance and returns the pre-roll it was seeded with, so a
+    /// streaming consumer can be fed the same audio the batch buffer holds.
+    @discardableResult
+    public func beginCapture() -> [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+        samples = preRoll
+        isCapturing = true
+        return preRoll
+    }
 
+    /// Ends the utterance and returns its samples.
+    public func endCapture() throws -> [Float] {
         lock.lock()
         let captured = samples
         samples.removeAll()
+        isCapturing = false
         lock.unlock()
 
+        level = 0
         guard Double(captured.count) / Self.targetSampleRate >= Self.minimumDuration else {
             throw RecorderError.tooShort
         }
         return captured
     }
 
-    /// Stops capture and discards everything recorded.
-    public func cancel() {
-        teardown()
+    /// Ends the utterance and throws its audio away.
+    public func cancelCapture() {
         lock.lock()
         samples.removeAll()
+        isCapturing = false
         lock.unlock()
+        level = 0
     }
 
-    private func teardown() {
+    /// Stops the engine entirely. Used at shutdown.
+    public func teardown() {
         guard isRunning else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRunning = false
-        level = 0
+        cancelCapture()
     }
 
     private func append(_ buffer: AVAudioPCMBuffer, using converter: AVAudioConverter) {
@@ -137,8 +166,19 @@ public final class AudioRecorder: @unchecked Sendable {
         for sample in frames { peak = max(peak, abs(sample)) }
         level = peak
 
+        let chunk = Array(frames)
+
         lock.lock()
-        samples.append(contentsOf: frames)
+        if isCapturing {
+            samples.append(contentsOf: chunk)
+        }
+        preRoll.append(contentsOf: chunk)
+        if preRoll.count > preRollCapacity {
+            preRoll.removeFirst(preRoll.count - preRollCapacity)
+        }
+        let capturing = isCapturing
         lock.unlock()
+
+        if capturing { onCapturedChunk?(chunk) }
     }
 }

@@ -1,9 +1,10 @@
 import AVFoundation
+import AppKit
 import Foundation
 import SwiftUI
 
-/// Wires capture, transcription, cleanup and injection into one loop, and owns
-/// the state the UI renders.
+/// Wires capture, live transcription, cleanup and injection into one loop, and
+/// owns the state the UI renders.
 @MainActor
 public final class DictationEngine: ObservableObject {
     public enum State: Equatable {
@@ -19,56 +20,100 @@ public final class DictationEngine: ObservableObject {
         }
     }
 
+    public enum Permission: Sendable {
+        case microphone
+        case accessibility
+
+        /// Deep link into the exact Privacy pane rather than the settings root.
+        public var settingsURL: URL {
+            switch self {
+            case .microphone:
+                return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
+            case .accessibility:
+                return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+            }
+        }
+    }
+
     /// Number of level samples the HUD's meter draws.
     public static let meterResolution = 24
 
-    /// Roughly 30 fps, which is enough for the meter to feel live without
-    /// waking the main actor more often than the display refreshes.
+    /// Roughly 30 fps, enough for the meter to feel live without waking the main
+    /// actor more often than the display refreshes.
     private static let meterInterval = Duration.milliseconds(33)
+
+    /// The AppDelegate drives the lifecycle while the menu bar scene observes
+    /// state, so both need to reach the same instance.
+    public static let shared = DictationEngine()
 
     @Published public private(set) var state: State = .preparing(.loading)
     @Published public private(set) var lastTranscript: String = ""
     @Published public private(set) var isHandsFree = false
+    /// Live transcript, updated while the user is still speaking.
+    @Published public private(set) var partialText: String = ""
     /// Recent input levels, oldest first. Drives the HUD meter.
     @Published public private(set) var levels: [Float] = Array(repeating: 0, count: DictationEngine.meterResolution)
+    /// Which permission is blocking startup, if any. Drives the settings link.
+    @Published public private(set) var missing: Permission?
 
     private let recorder = AudioRecorder()
-    private let transcriber: any Transcriber
+    private let streaming: StreamingTranscriber
     private let formatter: TextFormatter
     private var hotkeys: HotkeyMonitor?
     private var meterTask: Task<Void, Never>?
 
     public init(
-        transcriber: any Transcriber = ParakeetTranscriber(),
+        streaming: StreamingTranscriber = StreamingTranscriber(),
         formatter: TextFormatter = RuleFormatter()
     ) {
-        self.transcriber = transcriber
+        self.streaming = streaming
         self.formatter = formatter
     }
 
     /// Requests permissions, loads the speech model, and arms the hotkeys.
+    ///
+    /// Blocks on each permission rather than bailing out, so granting access in
+    /// System Settings resumes startup instead of requiring a relaunch.
     public func start() async {
         guard await requestMicrophoneAccess() else {
-            state = .needsPermission("Microphone access is required. Grant it in System Settings › Privacy & Security › Microphone.")
+            missing = .microphone
+            state = .needsPermission("Cobra needs the microphone to hear you.")
             return
         }
+
+        if !HotkeyMonitor.hasAccessibilityPermission(prompt: true) {
+            missing = .accessibility
+            state = .needsPermission("Cobra needs Accessibility to see the fn key and type into other apps.")
+            await waitForAccessibility()
+        }
+        missing = nil
 
         let monitor = HotkeyMonitor { [weak self] event in
             Task { @MainActor in self?.handle(event) }
         }
         guard monitor.start() else {
-            state = .needsPermission("Accessibility access is required to see the fn key and to type into other apps. Grant it in System Settings › Privacy & Security › Accessibility, then relaunch Cobra.")
+            // Trusted but the tap still would not arm — some macOS builds only
+            // hand out an event tap to a process that started already trusted.
+            missing = .accessibility
+            state = .needsPermission("Accessibility is granted but the key listener could not start. Quit and reopen Cobra.")
             return
         }
         hotkeys = monitor
 
         do {
-            try await transcriber.prepare { [weak self] progress in
+            try await streaming.prepare { [weak self] progress in
                 Task { @MainActor in
                     guard let self, case .preparing = self.state else { return }
                     self.state = .preparing(progress)
                 }
             }
+
+            // Audio flows continuously from here: the pre-roll needs it, and so
+            // does live transcription.
+            recorder.onCapturedChunk = { [streaming] chunk in
+                streaming.feed(chunk)
+            }
+            try recorder.prepare()
         } catch {
             state = .failed(error.localizedDescription)
             return
@@ -80,7 +125,13 @@ public final class DictationEngine: ObservableObject {
     public func shutdown() {
         meterTask?.cancel()
         hotkeys?.stop()
-        recorder.cancel()
+        recorder.teardown()
+    }
+
+    /// Opens the Privacy pane for whatever is currently blocking startup.
+    public func openSettingsForMissingPermission() {
+        guard let missing else { return }
+        NSWorkspace.shared.open(missing.settingsURL)
     }
 
     private func handle(_ event: HotkeyEvent) {
@@ -106,35 +157,51 @@ public final class DictationEngine: ObservableObject {
 
     private func beginRecording() {
         guard state == .idle else { return }
-        do {
-            try recorder.start()
-            state = .recording
-            startMetering()
-        } catch {
-            state = .failed(error.localizedDescription)
+
+        partialText = ""
+        state = .recording
+        startMetering()
+
+        Task {
+            do {
+                // The session must exist before capture starts, or the first
+                // chunks have nowhere to go. The pre-roll covers this gap.
+                try await streaming.begin { text in
+                    Task { @MainActor [weak self] in self?.partialText = text }
+                }
+                let preRoll = recorder.beginCapture()
+                streaming.feed(preRoll)
+            } catch {
+                stopMetering()
+                state = .failed(error.localizedDescription)
+            }
         }
     }
 
     private func finishRecording() {
         stopMetering()
 
-        // Capture the frontmost app before transcription, because the user may
-        // click elsewhere while the model is still working.
+        // Capture the frontmost app before transcription finishes, because the
+        // user may click elsewhere while the model is still working.
         let context = AppContext.current()
 
-        let samples: [Float]
         do {
-            samples = try recorder.stop()
+            _ = try recorder.endCapture()
         } catch {
-            state = .idle  // A too-short tap is not worth surfacing as an error.
+            // A too-short tap is not worth surfacing as an error, but the
+            // streaming session still has to be torn down.
+            Task { await streaming.cancel() }
+            partialText = ""
+            state = .idle
             return
         }
 
         state = .transcribing
         Task {
             do {
-                let raw = try await transcriber.transcribe(samples: samples)
+                let raw = try await streaming.finish()
                 let cleaned = await formatter.format(raw, context: context)
+                partialText = ""
                 guard !cleaned.isEmpty else {
                     state = .idle
                     return
@@ -143,6 +210,7 @@ public final class DictationEngine: ObservableObject {
                 TextInjector.inject(cleaned)
                 state = .idle
             } catch {
+                partialText = ""
                 state = .failed(error.localizedDescription)
             }
         }
@@ -166,6 +234,16 @@ public final class DictationEngine: ObservableObject {
         meterTask?.cancel()
         meterTask = nil
         levels = Array(repeating: 0, count: Self.meterResolution)
+    }
+
+    /// Polls until the user grants Accessibility. There is no notification for
+    /// this, so polling is the only option; one second is imperceptible next to
+    /// the time it takes to click through System Settings.
+    private func waitForAccessibility() async {
+        while !HotkeyMonitor.hasAccessibilityPermission() {
+            try? await Task.sleep(for: .seconds(1))
+            if Task.isCancelled { return }
+        }
     }
 
     private func requestMicrophoneAccess() async -> Bool {

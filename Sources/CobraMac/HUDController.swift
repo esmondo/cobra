@@ -26,6 +26,9 @@ final class HUDController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false          // The SwiftUI capsule draws its own.
+        // Toggled per state: the pill is inert while dictating so it never
+        // steals a click, but must be clickable when it reports a problem the
+        // user has to act on.
         panel.ignoresMouseEvents = true
         panel.becomesKeyOnlyIfNeeded = true
         panel.hidesOnDeactivate = false
@@ -34,11 +37,12 @@ final class HUDController {
         panel.animationBehavior = .utilityWindow
     }
 
-    func setVisible(_ visible: Bool) {
+    func setVisible(_ visible: Bool, interactive: Bool = false) {
         guard visible else {
             panel.orderOut(nil)
             return
         }
+        panel.ignoresMouseEvents = !interactive
         panel.setContentSize(hostingView.fittingSize)
         position()
         panel.orderFrontRegardless()

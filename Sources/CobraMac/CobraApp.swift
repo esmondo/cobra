@@ -1,39 +1,56 @@
 import AppKit
+import Combine
 import CobraCore
 import SwiftUI
 
 @main
 struct CobraApp: App {
-    @StateObject private var engine = DictationEngine()
-    @State private var hud: HUDController?
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @ObservedObject private var engine = DictationEngine.shared
 
     var body: some Scene {
         MenuBarExtra {
             MenuContent(engine: engine)
         } label: {
-            // Startup hangs off the label, not the menu content: with
-            // `.menuBarExtraStyle(.menu)` the content closure is not evaluated
-            // until the user opens the menu, but the label renders at launch.
-            MenuBarGlyph(state: engine.state)
-                .task {
-                    hud = HUDController(engine: engine)
-                    await engine.start()
+            // Deliberately bare. NSStatusItem sizes itself from this view, and
+            // hanging async work off it (a .task that starts the engine) let it
+            // measure as zero-width and never recover — the icon simply never
+            // appeared. Lifecycle belongs in the AppDelegate.
+            // The cobra mark while things are healthy; SF Symbols carry the
+            // exceptional states, where a recognisable warning beats branding.
+            Group {
+                if let symbol = engine.state.alertSymbol {
+                    Image(systemName: symbol)
+                } else {
+                    Image(nsImage: engine.state.isWorking ? CobraMark.active : CobraMark.template)
                 }
-                .onChange(of: engine.state) { _, state in
-                    hud?.setVisible(state.showsHUD)
-                }
+            }
         }
         .menuBarExtraStyle(.menu)
     }
 }
 
-private struct MenuBarGlyph: View {
-    let state: DictationEngine.State
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var hud: HUDController?
+    private var observation: AnyCancellable?
 
-    var body: some View {
-        Image(systemName: state.symbolName)
-            .symbolRenderingMode(state.isVenom ? .palette : .hierarchical)
-            .foregroundStyle(state.isVenom ? Theme.Palette.venom : Color.primary)
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let engine = DictationEngine.shared
+        let hud = HUDController(engine: engine)
+        self.hud = hud
+
+        observation = engine.$state
+            .receive(on: RunLoop.main)
+            .sink { state in
+                hud.setVisible(state.showsHUD, interactive: state.isActionable)
+            }
+
+        Task { await engine.start() }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        DictationEngine.shared.shutdown()
     }
 }
 
@@ -42,6 +59,12 @@ private struct MenuContent: View {
 
     var body: some View {
         Text(engine.state.summary)
+
+        if engine.missing != nil {
+            Button("Open System Settings…") {
+                engine.openSettingsForMissingPermission()
+            }
+        }
 
         if !engine.lastTranscript.isEmpty {
             Divider()
@@ -61,7 +84,7 @@ private struct MenuContent: View {
     }
 }
 
-private extension DictationEngine.State {
+extension DictationEngine.State {
     /// The HUD is for moments the user needs feedback on. Idle is not one of
     /// them — a permanently visible pill would just be clutter.
     var showsHUD: Bool {
@@ -72,19 +95,29 @@ private extension DictationEngine.State {
         }
     }
 
-    /// Accent the menu bar icon only while Cobra is actually doing something.
-    var isVenom: Bool {
-        self == .recording || self == .transcribing
+    /// States where clicking the pill should do something.
+    var isActionable: Bool {
+        if case .needsPermission = self { return true }
+        return false
     }
 
-    var symbolName: String {
+    /// Non-nil only for states the user has to act on, where a familiar system
+    /// symbol communicates faster than a brand mark.
+    var alertSymbol: String? {
         switch self {
-        case .preparing: return "arrow.down.circle"
-        case .idle: return "mic"
-        case .recording: return "mic.fill"
-        case .transcribing: return "waveform"
         case .needsPermission: return "lock.trianglebadge.exclamationmark"
         case .failed: return "exclamationmark.triangle"
+        case .preparing(.downloading): return "arrow.down.circle"
+        default: return nil
+        }
+    }
+
+    /// Venom while Cobra is working; otherwise the template mark, which lets
+    /// the menu bar tint it like every other status item.
+    var isWorking: Bool {
+        switch self {
+        case .recording, .transcribing: return true
+        default: return false
         }
     }
 

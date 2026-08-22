@@ -1,0 +1,27 @@
+# Cobra mark — 16x16 pixel art, front-facing hooded cobra.
+# Single source of truth: Scripts/make-icon.py renders this into both the
+# .icns app icon and the Swift menu bar glyph, so the two cannot drift.
+#
+#   .  transparent
+#   #  body      (venom green)
+#   o  eye       (knocked out, so the dark tile shows through)
+#   ~  tongue    (danger red)
+#
+# The eyes are 2x2 rather than single pixels: at menu bar size a one-pixel eye
+# disappears and the silhouette stops reading as a face.
+................
+...##########...
+..############..
+.##############.
+.##############.
+.##oo######oo##.
+.##oo######oo##.
+.##############.
+.##############.
+..############..
+...##########...
+....########....
+.....######.....
+......####......
+......~~~~......
+.....~~..~~.....

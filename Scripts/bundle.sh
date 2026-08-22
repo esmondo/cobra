@@ -13,12 +13,15 @@ BUNDLE_ID="ai.cobra.mac"
 SIGN_IDENTITY="${COBRA_SIGN_IDENTITY:-Cobra Dev}"
 
 cd "$ROOT"
+# Regenerate the icon from the pixel map before packaging.
+python3 "$ROOT/Scripts/make-icon.py"
 swift build -c "$CONFIGURATION"
 BIN="$(swift build -c "$CONFIGURATION" --show-bin-path)/CobraMac"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Cobra"
+cp "$ROOT/build/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -29,6 +32,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key><string>Cobra</string>
     <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
     <key>CFBundleExecutable</key><string>Cobra</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>
@@ -43,7 +47,9 @@ PLIST
 
 # Ad-hoc signatures change hash on every build, which makes TCC forget its
 # grants. A self-signed identity (Scripts/make-cert.sh) keeps them stable.
-if security find-identity -v -p codesigning | grep -q "$SIGN_IDENTITY"; then
+# `find-identity -p codesigning` only lists *trusted* certificates, and the
+# Cobra Dev cert is deliberately untrusted, so look the certificate up directly.
+if security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
     codesign --force --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" "$APP"
     echo "Signed with '$SIGN_IDENTITY' — permissions persist across rebuilds."
 else

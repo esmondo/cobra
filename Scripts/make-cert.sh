@@ -1,27 +1,54 @@
 #!/usr/bin/env bash
-# Creates a self-signed code signing certificate named "Cobra Dev".
+# Creates the "Cobra Dev" self-signed code signing identity.
 #
-# Without a stable signing identity, macOS treats each rebuild as a different
-# program and drops the Microphone and Accessibility grants.
+# Why this matters: an ad-hoc signature makes the app's designated requirement
+# depend on its cdhash, which changes on every build. macOS then treats each
+# rebuild as a different program and silently drops the Microphone and
+# Accessibility grants. Signing with a stable certificate instead produces
+#
+#     identifier "ai.cobra.mac" and certificate leaf = H"..."
+#
+# which holds across rebuilds, so permissions are granted once.
+#
+# The certificate does NOT need to be added to the trust store — codesign
+# accepts an untrusted self-signed identity, and TCC only cares about the leaf
+# hash. That keeps this script free of authorisation prompts.
 set -euo pipefail
 
 NAME="Cobra Dev"
+KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
-if security find-identity -v -p codesigning | grep -q "$NAME"; then
-    echo "'$NAME' already exists."
+if security find-certificate -c "$NAME" >/dev/null 2>&1; then
+    echo "'$NAME' already exists — nothing to do."
     exit 0
 fi
 
-cat <<'INSTRUCTIONS'
-Keychain Access cannot create a code signing certificate from the command line
-without an interactive assistant. Do this once:
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 
-  1. Open Keychain Access.
-  2. Menu: Keychain Access > Certificate Assistant > Create a Certificate…
-  3. Name:            Cobra Dev
-     Identity Type:   Self Signed Root
-     Certificate Type: Code Signing
-  4. Create, then Done.
+cat > "$WORK/cert.cnf" <<'CNF'
+[req]
+distinguished_name=dn
+x509_extensions=v3
+prompt=no
+[dn]
+CN=Cobra Dev
+[v3]
+basicConstraints=critical,CA:false
+keyUsage=critical,digitalSignature
+extendedKeyUsage=critical,codeSigning
+CNF
 
-Then re-run Scripts/bundle.sh — it will pick the identity up automatically.
-INSTRUCTIONS
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -keyout "$WORK/cobra.key" -out "$WORK/cobra.crt" -config "$WORK/cert.cnf" 2>/dev/null
+
+# OpenSSL 3 defaults to a PKCS#12 MAC that macOS cannot read ("MAC verification
+# failed"); the legacy algorithms below are required for `security import`.
+openssl pkcs12 -export -out "$WORK/cobra.p12" \
+    -inkey "$WORK/cobra.key" -in "$WORK/cobra.crt" \
+    -passout pass:cobra -name "$NAME" \
+    -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1 2>/dev/null
+
+security import "$WORK/cobra.p12" -k "$KEYCHAIN" -P cobra -T /usr/bin/codesign -A
+
+echo "Created '$NAME'. Run Scripts/bundle.sh, then grant permissions once."

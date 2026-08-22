@@ -13,12 +13,13 @@ struct RecordingHUD: View {
 
             if engine.state == .recording {
                 LevelMeter(levels: engine.levels)
+                LiveTranscript(text: engine.partialText, placeholder: label)
+            } else {
+                Text(label)
+                    .font(Theme.Typeface.label)
+                    .foregroundStyle(Theme.Palette.text)
+                    .fixedSize()
             }
-
-            Text(label)
-                .font(Theme.Typeface.label)
-                .foregroundStyle(Theme.Palette.text)
-                .fixedSize()
         }
         .padding(.horizontal, Theme.Metrics.hudPadding)
         .frame(height: Theme.Metrics.hudHeight)
@@ -31,6 +32,7 @@ struct RecordingHUD: View {
         .shadow(color: .black.opacity(0.5), radius: 12, y: 4)
         .padding(14)  // Room for the shadow inside the panel's own bounds.
         .animation(.easeOut(duration: 0.15), value: engine.state)
+        .onTapGesture { engine.openSettingsForMissingPermission() }
     }
 
     private var label: String {
@@ -44,7 +46,7 @@ struct RecordingHUD: View {
         case .transcribing:
             return "Thinking"
         case .needsPermission:
-            return "Permission needed"
+            return "Click to grant permission"
         case .failed:
             return "Something broke"
         case .idle:
@@ -81,6 +83,27 @@ private struct StatusIndicator: View {
             }
         }
         .frame(width: 12)
+    }
+}
+
+/// Words as they are recognised, ahead of the user releasing the key.
+///
+/// The width is fixed rather than fitted to the text: the panel is sized when
+/// the HUD appears, and a pill that grew with every word would need to resize
+/// mid-utterance and jitter under the caret. Older words scroll off the front,
+/// so the most recent speech stays visible.
+private struct LiveTranscript: View {
+    let text: String
+    let placeholder: String
+
+    var body: some View {
+        Text(text.isEmpty ? placeholder : text)
+            .font(Theme.Typeface.label)
+            .foregroundStyle(text.isEmpty ? Theme.Palette.textDim : Theme.Palette.text)
+            .lineLimit(1)
+            .truncationMode(.head)
+            .frame(width: 240, alignment: .leading)
+            .animation(nil, value: text)  // Text should appear, not slide.
     }
 }
 

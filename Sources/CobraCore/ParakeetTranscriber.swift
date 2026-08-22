@@ -18,8 +18,14 @@ public actor ParakeetTranscriber: Transcriber {
     }
 
     private var manager: AsrManager?
+    private let language: Language
 
-    public init() {}
+    /// - Parameter language: Hint for v3's script-aware token filtering. Without
+    ///   it the decoder will happily emit tokens from the wrong script, which is
+    ///   accuracy given away for nothing.
+    public init(language: Language = .english) {
+        self.language = language
+    }
 
     public func prepare(progress: @escaping @Sendable (TranscriberPreparation) -> Void) async throws {
         guard manager == nil else {
@@ -48,7 +54,7 @@ public actor ParakeetTranscriber: Transcriber {
         // Each push-to-talk press is an independent utterance, so the decoder
         // starts fresh rather than carrying state across presses.
         var state = try TdtDecoderState()
-        let result = try await manager.transcribe(samples, decoderState: &state)
+        let result = try await manager.transcribe(samples, decoderState: &state, language: language)
         return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
