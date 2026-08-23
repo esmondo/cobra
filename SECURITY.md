@@ -7,11 +7,33 @@ code rather than taken on trust.
 
 ## What Cobra can and cannot see
 
-**The event tap cannot read your keystrokes.** `HotkeyMonitor` creates its tap
-with `options: .listenOnly` and an event mask of `flagsChanged` alone. That mask
-excludes `keyDown` and `keyUp`, so character keys never reach Cobra — only
-modifier state transitions. It is also listen-only, meaning it cannot alter or
-swallow events. See `Sources/CobraCore/HotkeyMonitor.swift`.
+**The event tap does receive key presses.** This changed when fn + H was
+added as the hands-free shortcut, and the earlier claim that character keys
+never reached Cobra no longer holds.
+
+`HotkeyMonitor` now registers for `keyDown` in addition to `flagsChanged`, and
+runs as a `defaultTap` rather than listen-only. Both were required: a modifier
+mask cannot see the H key, and a listen-only tap cannot swallow it, so starting
+hands-free would type an "h" into whatever you were writing.
+
+What Cobra does with that access, which you can check in
+`Sources/CobraCore/HotkeyMonitor.swift`:
+
+- A `keyDown` is inspected for its keycode only. Its character content is never
+  read.
+- Only keycode 4 (H) with the fn modifier held is claimed. That event is
+  consumed so it cannot reach the focused app.
+- Every other key press is returned untouched, and nothing about it is stored,
+  logged or transmitted.
+
+The per-event debug log line records keycodes for modifier changes only, at
+`.debug` level, which macOS does not write to the persistent store. Key presses
+are never logged.
+
+This is a real increase in capability over the previous design. A tap that can
+see and drop key events is, mechanically, what a keylogger needs. The
+protection is that the code is short, single-purpose and auditable — not that
+the permission is absent.
 
 **The microphone is open for as long as Cobra runs.** This is a deliberate
 trade-off, not an oversight: capturing the 0.4 s of audio *before* you press the
@@ -28,12 +50,22 @@ no transcription API, no telemetry, and no analytics.
 
 ## Network access
 
-Exactly one network operation exists: the first launch downloads the speech
-model from Hugging Face over HTTPS, into
-`~/Library/Application Support/FluidAudio/Models`. Nothing is uploaded, ever.
+Cobra makes two outbound requests, and uploads nothing in either.
 
-The download is protected by TLS but the model files are not independently
-checksummed by Cobra. Pinning a digest is tracked in the roadmap.
+**The speech model**, fetched once from Hugging Face over HTTPS into
+`~/Library/Application Support/FluidAudio/Models`. TLS protects the transfer,
+but Cobra does not independently checksum the files. Pinning a digest is
+tracked in the roadmap.
+
+**An update check**, every six hours, against the GitHub Releases API for this
+repository. It sends nothing beyond what any HTTPS request carries — your
+address, and by implication roughly when Cobra is running. Nothing about your
+dictation is included. Switch it off with **Check for updates** in the menu;
+the preference persists and no request is made while it is off.
+
+Cobra never downloads or installs an update itself. It links to the release
+page and leaves the decision to you, because a self-signed build fetched from
+the internet is quarantined by Gatekeeper and would not open anyway.
 
 ## Security behaviour and known risks
 

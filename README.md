@@ -55,7 +55,8 @@ still reports it missing, the stored entry is stale; see
 | Key | Action |
 | --- | --- |
 | Hold **fn** | Record while held, insert on release |
-| Double-tap **right Shift** | Toggle hands-free recording |
+| **fn + H** | Start hands-free recording |
+| **fn** | Stop hands-free recording |
 
 Words appear in the floating pill while you speak. The pill follows your text
 caret where the app exposes one, and sits at the bottom of the screen where it
@@ -145,6 +146,28 @@ floats over other people's apps, and a light pill glares over a dark editor.
 
 Edit `Scripts/cobra.pixels` to change the logo. That map generates both the app
 icon and the menu bar glyph, so the two cannot drift apart.
+
+## Releases
+
+Tagging a commit `v*` builds Cobra on CI and publishes a GitHub Release with a
+zipped app. Installed copies check that endpoint every six hours and surface
+**Update available** in the menu, linking to the release page. Cobra never
+installs an update itself — see below for why.
+
+```sh
+git tag v0.3.0 && git push origin v0.3.0
+```
+
+Builds are **not notarised**, so macOS quarantines the download and blocks the
+first launch. Users have to clear the flag by hand:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Cobra.app
+```
+
+Fixing that properly needs a Developer ID certificate and notarisation, which
+requires a paid Apple Developer account. Until then Cobra is practical to share
+with people willing to run one command, and not with anyone else.
 
 ## Roadmap
 

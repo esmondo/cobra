@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
         Task { await engine.start() }
+        UpdateChecker.shared.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -57,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 private struct MenuContent: View {
     @ObservedObject var engine: DictationEngine
     @ObservedObject private var hud = HUDPreferences.shared
+    @ObservedObject private var updates = UpdateChecker.shared
 
     var body: some View {
         Text(engine.state.summary)
@@ -80,8 +82,16 @@ private struct MenuContent: View {
             }
         }
 
+        if let release = updates.available {
+            Divider()
+            Button("Update available — v\(release.version)") {
+                NSWorkspace.shared.open(release.url)
+            }
+        }
+
         Divider()
         Toggle("Pill follows pointer", isOn: $hud.followsPointer)
+        Toggle("Check for updates", isOn: $updates.isEnabled)
         Toggle("Microphone", isOn: Binding(
             get: { engine.isMicrophoneEnabled },
             set: { engine.setMicrophoneEnabled($0) }
@@ -89,7 +99,7 @@ private struct MenuContent: View {
 
         Divider()
         Text("Hold fn to dictate")
-        Text(engine.isHandsFree ? "Hands-free: on" : "Double-tap right Shift for hands-free")
+        Text(engine.isHandsFree ? "Hands-free on — press fn to stop" : "fn + H for hands-free")
 
         Divider()
         Button("Quit Cobra") {

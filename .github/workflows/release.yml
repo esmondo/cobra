@@ -1,0 +1,43 @@
+name: Release
+
+# Fires on tags rather than on every push. Users should hear about considered
+# releases, not about each commit merged to main.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # bundle.sh derives the version from `git describe`
+
+      - name: Build and package
+        run: ./Scripts/bundle.sh
+
+      - name: Archive
+        run: ditto -c -k --keepParent build/Cobra.app Cobra.zip
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Cobra.zip
+          generate_release_notes: true
+          body: |
+            Download `Cobra.zip`, unzip, and move Cobra to /Applications.
+
+            **This build is not notarised.** macOS quarantines apps downloaded
+            from the internet, so the first launch is blocked. Clear the
+            quarantine flag before opening it:
+
+            ```sh
+            xattr -dr com.apple.quarantine /Applications/Cobra.app
+            ```
+
+            Cobra then asks for Microphone and Accessibility, both of which it
+            needs. See SECURITY.md for exactly what it does with them.
