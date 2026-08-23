@@ -8,8 +8,8 @@ public enum HotkeyEvent: Sendable {
     case pushToTalkBegan
     /// The push-to-talk key came back up.
     case pushToTalkEnded
-    /// The hands-free key was double-tapped.
-    case handsFreeToggled
+    /// fn + H was pressed, asking to switch into hands-free.
+    case handsFreeRequested
 }
 
 /// Watches for the global dictation hotkeys.
@@ -22,15 +22,12 @@ public final class HotkeyMonitor {
 
     /// Globe/fn. Held down to dictate.
     private static let fnKeyCode: Int64 = 63
-    /// Right Shift. Double-tapped to toggle hands-free mode.
-    private static let rightShiftKeyCode: Int64 = 60
-    /// Two taps further apart than this are treated as unrelated.
-    private static let doubleTapWindow: TimeInterval = 0.4
+    /// H. Pressed with fn held to start hands-free.
+    private static let hKeyCode: Int64 = 4
 
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var fnIsDown = false
-    private var lastRightShiftPress: TimeInterval = 0
     private let handler: @Sendable (HotkeyEvent) -> Void
 
     public init(handler: @escaping @Sendable (HotkeyEvent) -> Void) {
@@ -72,8 +69,11 @@ public final class HotkeyMonitor {
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
-            options: .listenOnly,
-            eventsOfInterest: CGEventMask(1 << CGEventType.flagsChanged.rawValue),
+            // Not listen-only: fn + H has to be swallowed, or starting
+            // hands-free types an "h" into whatever the user is writing.
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(1 << CGEventType.flagsChanged.rawValue)
+                | CGEventMask(1 << CGEventType.keyDown.rawValue),
             callback: callback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
@@ -114,6 +114,17 @@ public final class HotkeyMonitor {
 
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags
+
+        if type == .keyDown {
+            // Only fn + H is claimed. Every other key press is passed straight
+            // back untouched and is never inspected beyond its keycode.
+            guard keyCode == Self.hKeyCode, flags.contains(.maskSecondaryFn) else {
+                return Unmanaged.passUnretained(event)
+            }
+            handler(.handsFreeRequested)
+            return nil
+        }
+
         Self.log.debug("flagsChanged keyCode=\(keyCode, privacy: .public) flags=\(flags.rawValue, format: .hex, privacy: .public)")
 
         switch keyCode {
@@ -122,17 +133,6 @@ public final class HotkeyMonitor {
             if isDown != fnIsDown {
                 fnIsDown = isDown
                 handler(isDown ? .pushToTalkBegan : .pushToTalkEnded)
-            }
-
-        case Self.rightShiftKeyCode:
-            // Only the press edge counts, so one tap is one event, not two.
-            guard flags.contains(.maskShift) else { break }
-            let now = Date.timeIntervalSinceReferenceDate
-            if now - lastRightShiftPress < Self.doubleTapWindow {
-                lastRightShiftPress = 0
-                handler(.handsFreeToggled)
-            } else {
-                lastRightShiftPress = now
             }
 
         default:

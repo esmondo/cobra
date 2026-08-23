@@ -1,4 +1,5 @@
 import AppKit
+import os
 import ApplicationServices
 import CoreGraphics
 
@@ -60,25 +61,43 @@ public enum TextInjector {
     @discardableResult
     public static func inject(_ text: String, into target: Target) -> Method {
         guard !text.isEmpty else { return .accessibility }
-        guard isCurrent(target) else { return .focusChanged }
-        guard !isSecureTextField(target.element) else { return .secureField }
 
-        if injectViaAccessibility(text, into: target.element) {
+        // Resolve the element that holds focus now rather than insisting on the
+        // one captured when recording began. Some apps rebuild their
+        // accessibility tree between queries, so the captured reference can
+        // stop comparing equal even though focus never moved. Within a
+        // confirmed-identical process the live element is also the better
+        // target: it is where the caret actually is.
+        guard let element = currentElement(for: target) else { return .focusChanged }
+        guard !isSecureTextField(element) else { return .secureField }
+
+        if injectViaAccessibility(text, into: element) {
             return .accessibility
         }
-        guard isCurrent(target) else { return .focusChanged }
+        guard currentElement(for: target) != nil else { return .focusChanged }
         guard injectViaPasteboard(text, target: target) else {
-            return isCurrent(target) ? .pasteboardUnavailable : .focusChanged
+            return currentElement(for: target) != nil ? .pasteboardUnavailable : .focusChanged
         }
         return .pasteboard
     }
 
-    private static func isCurrent(_ target: Target) -> Bool {
-        guard target.context.matchesInjectionTarget(AppContext.current()),
-              let focused = focusedElement()
-        else { return false }
-        return CFEqual(target.element, focused)
+    /// The focused element, but only while the same application still owns
+    /// focus. Returns nil once focus has left the process that was recorded
+    /// into, which is the case this guard exists to catch.
+    private static func currentElement(for target: Target) -> AXUIElement? {
+        let now = AppContext.current()
+        guard target.context.matchesInjectionTarget(now) else {
+            log.notice("""
+                focus left process: pid \(target.context.processIdentifier, privacy: .public)\
+                ->\(now.processIdentifier, privacy: .public) \
+                bundle \(target.context.bundleID, privacy: .public)->\(now.bundleID, privacy: .public)
+                """)
+            return nil
+        }
+        return focusedElement()
     }
+
+    private static let log = Logger(subsystem: "ai.cobra.mac", category: "inject")
 
     private static func focusedElement() -> AXUIElement? {
         let system = AXUIElementCreateSystemWide()
@@ -125,7 +144,7 @@ public enum TextInjector {
         pasteboard.setData(Data(), forType: transientType)
         let injectedChangeCount = pasteboard.changeCount
 
-        guard isCurrent(target) else {
+        guard currentElement(for: target) != nil else {
             if pasteboard.changeCount == injectedChangeCount {
                 restore(saved, to: pasteboard)
             }

@@ -84,6 +84,9 @@ public final class DictationEngine: ObservableObject {
     private let formatter: TextFormatter
     private var hotkeys: HotkeyMonitor?
     private var meterTask: Task<Void, Never>?
+    /// Set when fn is still held for a reason other than push-to-talk, so its
+    /// release is consumed rather than treated as the end of a press.
+    private var ignoreNextPushToTalkEnd = false
     private var injectionTarget: TextInjector.Target?
 
     public init(
@@ -197,21 +200,31 @@ public final class DictationEngine: ObservableObject {
         Self.log.notice("hotkey \(String(describing: event), privacy: .public) state=\(String(describing: self.state), privacy: .public) mic=\(self.isMicrophoneEnabled, privacy: .public)")
         switch event {
         case .pushToTalkBegan:
-            guard !isHandsFree else { return }
-            beginRecording()
+            if isHandsFree {
+                // fn on its own ends hands-free. The matching release must not
+                // then be read as the end of a push-to-talk press.
+                isHandsFree = false
+                ignoreNextPushToTalkEnd = true
+                if state == .recording { finishRecording() }
+            } else {
+                beginRecording()
+            }
 
         case .pushToTalkEnded:
+            if ignoreNextPushToTalkEnd {
+                ignoreNextPushToTalkEnd = false
+                return
+            }
             guard !isHandsFree, state == .recording else { return }
             finishRecording()
 
-        case .handsFreeToggled:
-            if isHandsFree {
-                isHandsFree = false
-                if state == .recording { finishRecording() }
-            } else {
-                isHandsFree = true
-                beginRecording()
-            }
+        case .handsFreeRequested:
+            guard !isHandsFree else { return }
+            isHandsFree = true
+            // fn is necessarily still held, so the release that follows would
+            // otherwise stop the recording that was just handed to hands-free.
+            ignoreNextPushToTalkEnd = true
+            if state != .recording { beginRecording() }
         }
     }
 

@@ -39,7 +39,14 @@ public struct AppContext: Sendable, Equatable {
               bundleID == other.bundleID
         else { return false }
 
-        return windowTitle == other.windowTitle
+        // The window title is deliberately not compared. It changes for
+        // entirely benign reasons mid-utterance — an editor appending a dirty
+        // marker, a terminal rewriting its title as the running command
+        // changes, a browser reacting to tab activity — none of which mean
+        // focus moved. Requiring it to match rejected almost every insert.
+        // Process identity is what actually prevents text reaching another
+        // application, which is the risk this guard exists to stop.
+        return true
     }
 
     private static func focusedWindowTitle(pid: pid_t) -> String? {
