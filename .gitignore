@@ -2,6 +2,3 @@
 build/
 .DS_Store
 *.xcuserstate
-
-# Owned by a separate working session in this directory.
-docs/voice-ai-wiki/
